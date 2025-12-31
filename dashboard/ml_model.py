@@ -67,17 +67,45 @@ class RiskClassifier:
         self.model.fit(X_scaled, y_combined)
         self.is_trained = True
 
+    def extract_features(self, log_entry):
+        """Extract features from both summary and timeline"""
+        summary = log_entry.get('summary', {})
+        timeline = log_entry.get('timeline', {})
+        
+        # Base features from summary
+        runtime_ms = summary.get('runtime_ms', 0)
+        peak_cpu = summary.get('peak_cpu', 0)
+        peak_memory_kb = summary.get('peak_memory_kb', 0)
+        page_faults_minor = summary.get('page_faults_minor', 0)
+        page_faults_major = summary.get('page_faults_major', 0)
+        
+        # Timeline-based features
+        mem_samples = timeline.get('memory_kb', [])
+        cpu_samples = timeline.get('cpu_percent', [])
+        
+        # Memory growth rate
+        mem_growth = 0.0
+        if len(mem_samples) >= 2:
+            mem_growth = (mem_samples[-1] - mem_samples[0]) / max(len(mem_samples), 1)
+        
+        # CPU variance (indicates bursts)
+        cpu_variance = np.var(cpu_samples) if cpu_samples else 0.0
+        
+        return np.array([[runtime_ms, peak_cpu, peak_memory_kb, 
+                         page_faults_minor, page_faults_major, 
+                         mem_growth, cpu_variance]])
+    
     def predict(self, log_entry):
         if not self.is_trained:
             self.train_on_seed()
             
-        features = np.array([[
-            log_entry.get('runtime_ms', 0),
-            log_entry.get('cpu_usage_percent', 0),
-            log_entry.get('memory_peak_kb', 0),
-            log_entry.get('page_faults_minor', 0),
-            log_entry.get('page_faults_major', 0)
-        ]])
+        features = self.extract_features(log_entry)
+        
+        # Adjust feature dimension if needed (pad with zeros)
+        if features.shape[1] < 5:
+            features = np.pad(features, ((0, 0), (0, 5 - features.shape[1])), mode='constant')
+        elif features.shape[1] > 5:
+            features = features[:, :5]  # Use first 5 features for now
         
         features_scaled = self.scaler.transform(features)
         prediction = self.model.predict(features_scaled)[0]

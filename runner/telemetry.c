@@ -5,7 +5,17 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include "telemetry.h"
+
+// Ensure logs directory exists
+void ensure_logs_directory() {
+    struct stat st = {0};
+    if (stat("logs", &st) == -1) {
+        mkdir("logs", 0755);
+        printf("[Telemetry] Created logs/ directory\n");
+    }
+}
 
 // Get current time in milliseconds
 long get_current_time_ms() {
@@ -14,8 +24,23 @@ long get_current_time_ms() {
     return (tv.tv_sec * 1000) + (tv.tv_usec / 1000);
 }
 
-// Write telemetry to JSON file
-void log_telemetry(const char *filename, telemetry_log_t *log) {
+// Add a time-series sample
+void add_sample(telemetry_log_t *log, long elapsed_ms, int cpu_percent, long mem_kb) {
+    if (!log->samples) {
+        log->samples = malloc(sizeof(telemetry_sample_t) * MAX_SAMPLES);
+        log->sample_count = 0;
+    }
+    
+    if (log->sample_count < MAX_SAMPLES) {
+        log->samples[log->sample_count].time_ms = elapsed_ms;
+        log->samples[log->sample_count].cpu_percent = cpu_percent;
+        log->samples[log->sample_count].memory_kb = mem_kb;
+        log->sample_count++;
+    }
+}
+
+// Write telemetry to JSON file with timeline
+void log_telemetry(const char *filename, telemetry_log_t *log, pid_t child_pid) {
     FILE *fp = fopen(filename, "w");
     if (!fp) {
         perror("fopen telemetry log");
@@ -23,21 +48,51 @@ void log_telemetry(const char *filename, telemetry_log_t *log) {
     }
 
     fprintf(fp, "{\n");
+    fprintf(fp, "  \"pid\": %d,\n", child_pid);
     fprintf(fp, "  \"program\": \"%s\",\n", log->program_name);
     fprintf(fp, "  \"profile\": \"%s\",\n", log->profile_name);
-    fprintf(fp, "  \"runtime_ms\": %ld,\n", log->runtime_ms);
-    fprintf(fp, "  \"cpu_usage_percent\": %d,\n", log->cpu_usage_percent);
-    fprintf(fp, "  \"memory_peak_kb\": %ld,\n", log->memory_peak_kb);
-    fprintf(fp, "  \"page_faults_minor\": %lu,\n", log->minflt);
-    fprintf(fp, "  \"page_faults_major\": %lu,\n", log->majflt);
-    fprintf(fp, "  \"termination_signal\": \"%s\",\n", log->termination_signal);
-
-    fprintf(fp, "  \"blocked_syscall\": \"%s\",\n", log->blocked_syscall);
-    fprintf(fp, "  \"exit_reason\": \"%s\"\n", log->exit_reason);
+    
+    // Timeline data
+    fprintf(fp, "  \"timeline\": {\n");
+    fprintf(fp, "    \"time_ms\": [");
+    for (int i = 0; i < log->sample_count; i++) {
+        fprintf(fp, "%ld%s", log->samples[i].time_ms, i < log->sample_count - 1 ? "," : "");
+    }
+    fprintf(fp, "],\n");
+    
+    fprintf(fp, "    \"cpu_percent\": [");
+    for (int i = 0; i < log->sample_count; i++) {
+        fprintf(fp, "%d%s", log->samples[i].cpu_percent, i < log->sample_count - 1 ? "," : "");
+    }
+    fprintf(fp, "],\n");
+    
+    fprintf(fp, "    \"memory_kb\": [");
+    for (int i = 0; i < log->sample_count; i++) {
+        fprintf(fp, "%ld%s", log->samples[i].memory_kb, i < log->sample_count - 1 ? "," : "");
+    }
+    fprintf(fp, "]\n");
+    fprintf(fp, "  },\n");
+    
+    // Summary
+    fprintf(fp, "  \"summary\": {\n");
+    fprintf(fp, "    \"runtime_ms\": %ld,\n", log->runtime_ms);
+    fprintf(fp, "    \"peak_cpu\": %d,\n", log->cpu_usage_percent);
+    fprintf(fp, "    \"peak_memory_kb\": %ld,\n", log->memory_peak_kb);
+    fprintf(fp, "    \"page_faults_minor\": %lu,\n", log->minflt);
+    fprintf(fp, "    \"page_faults_major\": %lu,\n", log->majflt);
+    fprintf(fp, "    \"termination\": \"%s\",\n", log->termination_signal);
+    fprintf(fp, "    \"blocked_syscall\": \"%s\",\n", log->blocked_syscall);
+    fprintf(fp, "    \"exit_reason\": \"%s\"\n", log->exit_reason);
+    fprintf(fp, "  }\n");
     fprintf(fp, "}\n");
 
     fclose(fp);
-    printf("[Telemetry] Log written to %s\n", filename);
+    
+    if (log->samples) {
+        free(log->samples);
+    }
+    
+    printf("[Telemetry] Log written to %s (%d samples)\n", filename, log->sample_count);
 }
 
 // Parse /proc/[pid]/stat for CPU usage (Simplified for this project)

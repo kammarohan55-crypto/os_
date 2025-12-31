@@ -153,6 +153,9 @@ int main(int argc, char *argv[]) {
     }
 
     printf("[Sandbox-Parent] Preparing execution environment (Profile: %s)...\n", profile_str);
+    
+    // Ensure logs directory exists
+    ensure_logs_directory();
 
     // Prepare child stack
     char *stack = malloc(STACK_SIZE);
@@ -204,6 +207,8 @@ int main(int argc, char *argv[]) {
     log_data.memory_peak_kb = 0;
     log_data.minflt = 0;
     log_data.majflt = 0;
+    log_data.samples = NULL;
+    log_data.sample_count = 0;
     
     unsigned long long total_ticks = 0;
 
@@ -228,7 +233,13 @@ int main(int argc, char *argv[]) {
             // Update faults (they are cumulative in stat, so just take latest)
             log_data.minflt = minflt;
             log_data.majflt = majflt;
-
+            
+            // Add time-series sample
+            long elapsed = get_current_time_ms() - start_time;
+            double cpu_seconds = (double)current_ticks / sysconf(_SC_CLK_TCK);
+            double wall_seconds = (double)elapsed / 1000.0;
+            int current_cpu_percent = (wall_seconds > 0) ? (int)((cpu_seconds / wall_seconds) * 100.0) : 0;
+            add_sample(&log_data, elapsed, current_cpu_percent, current_mem);
 
             // -------------------------------------------------------------
             // DYNAMIC POLICY ADAPTATION (Phase 5)
@@ -302,10 +313,10 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // Generate Log Filename
+    // Generate Log Filename with PID for uniqueness
     char filename[128];
-    snprintf(filename, sizeof(filename), "logs/run_%ld.json", time(NULL));
-    log_telemetry(filename, &log_data);
+    snprintf(filename, sizeof(filename), "logs/run_%d_%ld.json", child_pid, time(NULL));
+    log_telemetry(filename, &log_data, child_pid);
 
     free(stack);
     return 0;
