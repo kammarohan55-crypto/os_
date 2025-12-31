@@ -2,8 +2,6 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-import os
-import json
 
 class RiskClassifier:
     def __init__(self):
@@ -11,52 +9,51 @@ class RiskClassifier:
         self.scaler = StandardScaler()
         self.is_trained = False
         
-        # Hardcoded seed data to ensure we have a model even with few logs
-        # Features: [runtime_ms, cpu_usage, memory_kb, minor_faults, major_faults]
-        # Labels: 0 (Benign), 1 (Malicious)
+        # Seed data for cold start
         self.X_seed = np.array([
-            [10, 5, 200, 10, 0],       # Quick benign ls
-            [50, 10, 1024, 50, 0],     # Normal calc
-            [5000, 99, 1024, 100, 0],  # CPU Hug (High CPU, long time)
-            [100, 10, 512000, 5000, 10], # Memory Eater (High Mem, faults)
-            [200, 30, 400, 10000, 0]   # Fork Bomb-like (High activity/faults usually)
+            [10, 5, 200, 0, 0],      # Quick benign
+            [50, 10, 1024, 0, 0],    # Normal
+            [5000, 99, 1024, 0, 0],  # CPU hog
+            [100, 10, 512000, 0, 10],  # Memory eater
+            [200, 30, 400, 0, 0]     # Suspicious
         ])
         self.y_seed = np.array(["Benign", "Benign", "Malicious", "Malicious", "Malicious"])
         
         self.train_on_seed()
 
     def train_on_seed(self):
+        """Train on seed data (cold start)"""
         self.scaler.fit(self.X_seed)
         X_scaled = self.scaler.transform(self.X_seed)
         self.model.fit(X_scaled, self.y_seed)
         self.is_trained = True
 
-    def train(self, logs_data):
-        # logs_data is list of dicts from app.py
-        if len(logs_data) < 5:
-            return # Not enough new data to override seed
-            
-        df = pd.DataFrame(logs_data)
+    def train(self, feature_df):
+        """
+        Train on real telemetry (feature DataFrame)
         
-        # Extract features
-        # We need a way to label them for 'real' training. 
-        # For this academic project, we might just assume:
-        # If exit_reason contains "VIOLATION" or "SIGNALED", it's likely "Malicious/Buggy"
-        # If exit_reason is "EXITED(0)", it's "Benign"
+        CRITICAL: This uses the EXTRACTED FEATURES, not raw logs
+        """
+        if len(feature_df) < 5:
+            return  # Not enough data
         
-        features = df[['runtime_ms', 'cpu_usage_percent', 'memory_peak_kb', 'page_faults_minor', 'page_faults_major']].fillna(0)
+        # Select ML features
+        feature_cols = ['runtime_ms', 'peak_cpu', 'peak_memory_kb', 
+                       'page_faults_minor', 'page_faults_major']
         
+        X = feature_df[feature_cols].fillna(0).values
+        
+        # Auto-labeling based on exit reason
         def get_label(row):
             if "VIOLATION" in str(row.get('exit_reason', '')):
                 return "Malicious"
-            if "SIGNALED" in str(row.get('exit_reason', '')):
-                return "Buggy"
-            return "Benign"
-
-        labels = df.apply(get_label, axis=1)
+            if "KILL" in str(row.get('exit_reason', '')) or "ADAPATION" in str(row.get('exit_reason', '')):
+                return "Malicious"
+            if "EXITED(0)" in str(row.get('exit_reason', '')):
+                return "Benign"
+            return "Buggy"
         
-        X = features.values
-        y = labels.values
+        y = feature_df.apply(get_label, axis=1).values
         
         # Combine with seed
         X_combined = np.vstack([self.X_seed, X])
@@ -67,45 +64,24 @@ class RiskClassifier:
         self.model.fit(X_scaled, y_combined)
         self.is_trained = True
 
-    def extract_features(self, log_entry):
-        """Extract features from both summary and timeline"""
-        summary = log_entry.get('summary', {})
-        timeline = log_entry.get('timeline', {})
+    def predict(self, feature_row):
+        """
+        Predict on a single feature row (dict or Series)
         
-        # Base features from summary
-        runtime_ms = summary.get('runtime_ms', 0)
-        peak_cpu = summary.get('peak_cpu', 0)
-        peak_memory_kb = summary.get('peak_memory_kb', 0)
-        page_faults_minor = summary.get('page_faults_minor', 0)
-        page_faults_major = summary.get('page_faults_major', 0)
-        
-        # Timeline-based features
-        mem_samples = timeline.get('memory_kb', [])
-        cpu_samples = timeline.get('cpu_percent', [])
-        
-        # Memory growth rate
-        mem_growth = 0.0
-        if len(mem_samples) >= 2:
-            mem_growth = (mem_samples[-1] - mem_samples[0]) / max(len(mem_samples), 1)
-        
-        # CPU variance (indicates bursts)
-        cpu_variance = np.var(cpu_samples) if cpu_samples else 0.0
-        
-        return np.array([[runtime_ms, peak_cpu, peak_memory_kb, 
-                         page_faults_minor, page_faults_major, 
-                         mem_growth, cpu_variance]])
-    
-    def predict(self, log_entry):
+        Args:
+            feature_row: dict with keys matching feature_cols
+        """
         if not self.is_trained:
             self.train_on_seed()
-            
-        features = self.extract_features(log_entry)
         
-        # Adjust feature dimension if needed (pad with zeros)
-        if features.shape[1] < 5:
-            features = np.pad(features, ((0, 0), (0, 5 - features.shape[1])), mode='constant')
-        elif features.shape[1] > 5:
-            features = features[:, :5]  # Use first 5 features for now
+        # Extract features in correct order
+        features = np.array([[
+            feature_row.get('runtime_ms', 0),
+            feature_row.get('peak_cpu', 0),
+            feature_row.get('peak_memory_kb', 0),
+            feature_row.get('page_faults_minor', 0),
+            feature_row.get('page_faults_major', 0)
+        ]])
         
         features_scaled = self.scaler.transform(features)
         prediction = self.model.predict(features_scaled)[0]
@@ -115,21 +91,22 @@ class RiskClassifier:
         return {
             "prediction": prediction,
             "confidence": round(confidence * 100, 1),
-            "reason": self.explain(prediction, log_entry)
+            "reason": self.explain(prediction, feature_row)
         }
 
-    def explain(self, prediction, log):
-        # Simple rule-based explanation to complement ML
+    def explain(self, prediction, feature_row):
+        """Rule-based explanation"""
         reasons = []
-        if log.get('cpu_usage_percent', 0) > 80:
+        if feature_row.get('peak_cpu', 0) > 80:
             reasons.append("High CPU")
-        if log.get('memory_peak_kb', 0) > 100000:
+        if feature_row.get('peak_memory_kb', 0) > 100000:
             reasons.append("High Memory")
-        if log.get('page_faults_minor', 0) > 1000:
-            reasons.append("High Activity")
-        if "VIOLATION" in log.get('exit_reason', ''):
+        if "VIOLATION" in feature_row.get('exit_reason', ''):
             reasons.append("Syscall Violation")
-            
+        if feature_row.get('runtime_ms', 0) > 2000:
+            reasons.append("Long Runtime")
+        
         if not reasons:
             return "Normal behavior"
         return " + ".join(reasons)
+

@@ -1,6 +1,7 @@
 import os
 import json
 import glob
+import pandas as pd
 import numpy as np
 
 def load_all_logs(log_dir="../logs"):
@@ -14,95 +15,110 @@ def load_all_logs(log_dir="../logs"):
                 log['_file'] = f
                 logs.append(log)
         except Exception as e:
-            print(f"Error reading {f}: {e}")
+            print(f"[Analytics] Error reading {f}: {e}")
     return logs
 
-def compute_statistics(logs):
-    """Compute comprehensive statistics from all logs"""
-    if not logs:
-        return {}
+def extract_features(logs):
+    """
+    FEATURE EXTRACTION LAYER (Critical for research correctness)
     
-    stats = {
-        "total_runs": len(logs),
-        "by_profile": {},
-        "by_exit_reason": {},
-        "syscall_violations": 0,
-        "avg_runtime_ms": 0,
-        "avg_cpu_percent": 0,
-        "avg_memory_kb": 0
-    }
+    Converts raw telemetry logs into structured feature DataFrame.
+    This is the ONLY input to ML and analytics.
     
-    runtimes = []
-    cpus = []
-    mems = []
+    Returns: pandas DataFrame with flat structure
+    """
+    features = []
     
     for log in logs:
-        summary = log.get("summary", {})
-        profile = log.get("profile", "UNKNOWN")
-        exit_reason = summary.get("exit_reason", "UNKNOWN")
+        summary = log.get('summary', {})
+        timeline = log.get('timeline', {})
         
-        # By profile
-        if profile not in stats["by_profile"]:
-            stats["by_profile"][profile] = {"count": 0, "avg_cpu": 0, "avg_mem": 0}
-        stats["by_profile"][profile]["count"] += 1
+        # Extract summary features (guaranteed fields)
+        feature_row = {
+            'program': log.get('program', 'unknown'),
+            'profile': log.get('profile', 'UNKNOWN'),
+            'pid': log.get('pid', 0),
+            
+            # Core metrics from summary
+            'runtime_ms': summary.get('runtime_ms', 0),
+            'peak_cpu': summary.get('peak_cpu', 0),
+            'peak_memory_kb': summary.get('peak_memory_kb', 0),
+            'page_faults_minor': summary.get('page_faults_minor', 0),
+            'page_faults_major': summary.get('page_faults_major', 0),
+            
+            # Exit information
+            'exit_reason': summary.get('exit_reason', 'UNKNOWN'),
+            'termination': summary.get('termination', ''),
+            'blocked_syscall': summary.get('blocked_syscall', ''),
+            
+            # Timeline-derived features
+            'sample_count': len(timeline.get('time_ms', [])),
+        }
         
-        # By exit reason
-        if exit_reason not in stats["by_exit_reason"]:
-            stats["by_exit_reason"][exit_reason] = 0
-        stats["by_exit_reason"][exit_reason] += 1
+        # Compute timeline statistics (safe)
+        cpu_samples = timeline.get('cpu_percent', [])
+        mem_samples = timeline.get('memory_kb', [])
         
-        # Syscall violations
-        if "VIOLATION" in exit_reason:
-            stats["syscall_violations"] += 1
+        if cpu_samples:
+            feature_row['avg_cpu'] = int(np.mean(cpu_samples))
+            feature_row['cpu_variance'] = float(np.var(cpu_samples))
+        else:
+            feature_row['avg_cpu'] = 0
+            feature_row['cpu_variance'] = 0.0
         
-        # Accumulate for averages
-        runtimes.append(summary.get("runtime_ms", 0))
-        cpus.append(summary.get("peak_cpu", 0))
-        mems.append(summary.get("peak_memory_kb", 0))
+        if mem_samples and len(mem_samples) >= 2:
+            # Memory growth rate (KB per sample)
+            feature_row['memory_growth_rate'] = float((mem_samples[-1] - mem_samples[0]) / len(mem_samples))
+            feature_row['avg_memory_kb'] = int(np.mean(mem_samples))
+        else:
+            feature_row['memory_growth_rate'] = 0.0
+            feature_row['avg_memory_kb'] = feature_row['peak_memory_kb']
+        
+        features.append(feature_row)
     
-    # Compute averages
-    if runtimes:
-        stats["avg_runtime_ms"] = int(np.mean(runtimes))
-        stats["avg_cpu_percent"] = int(np.mean(cpus))
-        stats["avg_memory_kb"] = int(np.mean(mems))
+    return pd.DataFrame(features)
+
+def compute_statistics(df):
+    """Compute comprehensive statistics from feature DataFrame"""
+    if df.empty:
+        return {
+            "total_runs": 0,
+            "by_profile": {},
+            "by_exit_reason": {},
+            "syscall_violations": 0
+        }
     
-    # Profile-specific averages
-    for profile in stats["by_profile"]:
-        profile_logs = [l for l in logs if l.get("profile") == profile]
-        if profile_logs:
-            profile_cpus = [l.get("summary", {}).get("peak_cpu", 0) for l in profile_logs]
-            profile_mems = [l.get("summary", {}).get("peak_memory_kb", 0) for l in profile_logs]
-            stats["by_profile"][profile]["avg_cpu"] = int(np.mean(profile_cpus))
-            stats["by_profile"][profile]["avg_mem"] = int(np.mean(profile_mems))
+    stats = {
+        "total_runs": len(df),
+        "by_profile": {},
+        "by_exit_reason": {},
+        "syscall_violations": int(df['exit_reason'].str.contains('VIOLATION', na=False).sum()),
+        "avg_runtime_ms": int(df['runtime_ms'].mean()),
+        "avg_cpu_percent": int(df['peak_cpu'].mean()),
+        "avg_memory_kb": int(df['peak_memory_kb'].mean())
+    }
+    
+    # By profile
+    for profile in df['profile'].unique():
+        profile_df = df[df['profile'] == profile]
+        stats["by_profile"][profile] = {
+            "count": len(profile_df),
+            "avg_cpu": int(profile_df['peak_cpu'].mean()),
+            "avg_mem": int(profile_df['peak_memory_kb'].mean()),
+            "avg_runtime": int(profile_df['runtime_ms'].mean())
+        }
+    
+    # By exit reason
+    exit_counts = df['exit_reason'].value_counts().to_dict()
+    stats["by_exit_reason"] = exit_counts
     
     return stats
 
-def get_memory_growth_rate(log):
-    """Calculate memory growth rate from timeline"""
-    timeline = log.get("timeline", {})
-    mem_samples = timeline.get("memory_kb", [])
-    
-    if len(mem_samples) < 2:
-        return 0.0
-    
-    x = np.arange(len(mem_samples))
-    y = np.array(mem_samples)
-    
-    if np.std(y) == 0:
-        return 0.0
-    
-    slope = np.polyfit(x, y, 1)[0]
-    return float(slope)
-
-def get_syscall_frequency(logs):
+def get_syscall_frequency(df):
     """Count blocked syscalls"""
-    syscall_counts = {}
+    if df.empty:
+        return {}
     
-    for log in logs:
-        syscall = log.get("summary", {}).get("blocked_syscall", "")
-        if syscall and syscall != "":
-            if syscall not in syscall_counts:
-                syscall_counts[syscall] = 0
-            syscall_counts[syscall] += 1
-    
-    return syscall_counts
+    # Filter non-empty syscalls
+    syscalls = df[df['blocked_syscall'] != '']['blocked_syscall']
+    return syscalls.value_counts().to_dict()
