@@ -1,29 +1,88 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OS Sandbox Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        h1 { color: #333; }
-        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-        .stat-box { text-align: center; padding: 20px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; }
-        .stat-value { font-size: 2em; font-weight: bold; color: #007bff; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #f8f9fa; }
-        .malicious { color: red; font-weight: bold; }
-        .benign { color: green; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: 20px;
+            background: #fafafa;
+            border: 1px solid #eee;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            background-color: #f8f9fa;
+        }
+
+        .malicious {
+            color: red;
+            font-weight: bold;
+        }
+
+        .benign {
+            color: green;
+        }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>OS Sandbox Analytics Dashboard</h1>
-        
+
         <div class="stats-grid">
             <div class="card stat-box">
                 <div>Total Runs</div>
@@ -50,10 +109,11 @@
                     <tr>
                         <th>Program</th>
                         <th>Profile</th>
-                        <th>Acc Time (ms)</th>
                         <th>CPU %</th>
                         <th>Mem (KB)</th>
                         <th>Exit Reason</th>
+                        <th>ML Prediction</th>
+                        <th>Risk Score</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -68,7 +128,7 @@
             try {
                 const response = await fetch('/api/stats');
                 const data = await response.json();
-                
+
                 document.getElementById('total-runs').textContent = data.total_runs;
                 document.getElementById('avg-cpu').textContent = data.avg_cpu + '%';
                 document.getElementById('avg-mem').textContent = data.avg_mem;
@@ -77,21 +137,27 @@
                 tbody.innerHTML = '';
                 data.runs.forEach(run => {
                     const tr = document.createElement('tr');
+                    let predColor = 'green';
+                    if (run.prediction === 'Malicious') predColor = 'red';
+                    if (run.prediction === 'Buggy') predColor = 'orange';
+
                     tr.innerHTML = `
                         <td>${run.program}</td>
                         <td>${run.profile}</td>
-                        <td>${run.runtime_ms}</td>
                         <td>${run.cpu_usage_percent}</td>
                         <td>${run.memory_peak_kb}</td>
                         <td class="${run.exit_reason.includes('VIOLATION') ? 'malicious' : ''}">${run.exit_reason}</td>
+                        <td style="color:${predColor}; font-weight:bold;">${run.prediction}</td>
+                        <td>${run.confidence}% <br><small>${run.reason}</small></td>
                     `;
                     tbody.appendChild(tr);
                 });
 
+
                 // Chart
                 const ctx = document.getElementById('violationChart').getContext('2d');
                 if (window.myChart) window.myChart.destroy();
-                
+
                 window.myChart = new Chart(ctx, {
                     type: 'bar',
                     data: {
@@ -114,4 +180,5 @@
         setInterval(fetchStats, 5000); // Refresh every 5s
     </script>
 </body>
+
 </html>
