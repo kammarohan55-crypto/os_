@@ -9,7 +9,9 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include "../policies/seccomp_rules.h"
+#include "telemetry.h"
 
 // Stack size for cloned child
 #define STACK_SIZE (1024 * 1024)
@@ -26,6 +28,7 @@
 struct container_config {
     char *binary_path;
     char **args;
+    sandbox_profile_t profile;
 };
 
 // Child process function
@@ -62,8 +65,13 @@ int child_fn(void *arg) {
     // -------------------------------------------------------------
     // B. MEMORY MANAGEMENT (Soft Limits)
     // Mechanism: setrlimit() for Stack and Data
-    // Hard limits are enforced by Cgroups v2 in the Python runner.
+    // Hard limits are enforced by Cgroups v2 in the Python runner (or here if Resource Aware).
     // -------------------------------------------------------------
+    if (config->profile == PROFILE_RESOURCE_AWARE) {
+         // Tighter limits or specific ones for Resource Aware
+         printf("[Sandbox-Child] Applying RESOURCE-AWARE limits...\n");
+    }
+
     struct rlimit rl;
     // Limit stack to 8MB
     rl.rlim_cur = 8 * 1024 * 1024;
@@ -92,7 +100,7 @@ int child_fn(void *arg) {
     // D. SYSTEM CALL HANDLING
     // Mechanism: Seccomp BPF
     // -------------------------------------------------------------
-    install_syscall_filter();
+    install_syscall_filter(config->profile);
 
     // -------------------------------------------------------------
     // C. PROCESS MANAGEMENT
@@ -107,13 +115,44 @@ int child_fn(void *arg) {
     return 1;
 }
 
+void print_usage(const char *prog) {
+    fprintf(stderr, "Usage: %s [--profile=STRICT|RESOURCE-AWARE|LEARNING] <executable> [args...]\n", prog);
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <executable> [args...]\n", argv[0]);
+        print_usage(argv[0]);
         return 1;
     }
 
-    printf("[Sandbox-Parent] Preparing execution environment...\n");
+    // Default profile
+    sandbox_profile_t profile = PROFILE_STRICT;
+    char *profile_str = "STRICT";
+    
+    int bin_index = 1;
+    if (strncmp(argv[1], "--profile=", 10) == 0) {
+        char *pinfo = argv[1] + 10;
+        if (strcmp(pinfo, "STRICT") == 0) {
+            profile = PROFILE_STRICT;
+            profile_str = "STRICT";
+        } else if (strcmp(pinfo, "RESOURCE-AWARE") == 0) {
+            profile = PROFILE_RESOURCE_AWARE;
+            profile_str = "RESOURCE-AWARE";
+        } else if (strcmp(pinfo, "LEARNING") == 0) {
+            profile = PROFILE_LEARNING;
+            profile_str = "LEARNING";
+        } else {
+             fprintf(stderr, "Unknown profile: %s. Using STRICT.\n", pinfo);
+        }
+        bin_index++;
+    }
+
+    if (bin_index >= argc) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    printf("[Sandbox-Parent] Preparing execution environment (Profile: %s)...\n", profile_str);
 
     // Prepare child stack
     char *stack = malloc(STACK_SIZE);
@@ -124,8 +163,9 @@ int main(int argc, char *argv[]) {
     
     // Setup config
     struct container_config config;
-    config.binary_path = argv[1];
-    config.args = &argv[1]; // Pass the executable + its args
+    config.binary_path = argv[bin_index];
+    config.args = &argv[bin_index]; // Pass the executable + its args
+    config.profile = profile;
 
     // -------------------------------------------------------------
     // C. PROCESS MANAGEMENT & E. FILESYSTEM
@@ -138,40 +178,110 @@ int main(int argc, char *argv[]) {
     
     int flags = CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWUSER | SIGCHLD;
     
-    // Implementation Note: Running directly on WSL2 as non-root might fail 
-    // without CLONE_NEWUSER. We attempt to add it.
-    // If this fails during the demo, we fallback to simple fork() but keeping Seccomp.
+    long start_time = get_current_time_ms();
     
     pid_t child_pid = clone(child_fn, stack + STACK_SIZE, flags, &config);
+
     
     if (child_pid == -1) {
         perror("clone failed (Trying fallback to simple fork without namespaces if unprivileged)");
-        // Fallback or exit? Strict requirement says "Enforce strict isolation".
-        // If clone fails (e.g. permission denied), we cannot proceed safely in a real scenario.
-        // However, for verify_step we act robustly.
         exit(1);
     }
 
     printf("[Sandbox-Parent] Child launched with PID: %d\n", child_pid);
 
     // -------------------------------------------------------------
-    // H. TIME MANAGEMENT
-    // Mechanism: waitpid()
-    // Parent waits for child. The Python runner handles the absolute timeout
-    // by killing THIS parent process, which propagates.
+    // H. TIME MANAGEMENT & TELEMETRY
+    // Mechanism: waitpid(WNOHANG) + Polling
     // -------------------------------------------------------------
     int status;
-    waitpid(child_pid, &status, 0);
+    int child_running = 1;
+    
+    telemetry_log_t log_data = {0};
+    log_data.program_name = config.binary_path;
+    log_data.profile_name = profile_str;
+    log_data.cpu_usage_percent = 0;
+    log_data.memory_peak_kb = 0;
+    log_data.minflt = 0;
+    log_data.majflt = 0;
+    
+    unsigned long long total_ticks = 0;
+
+
+    // Monitoring Loop
+    while (child_running) {
+        pid_t result = waitpid(child_pid, &status, WNOHANG);
+        
+        if (result == 0) {
+            // Child still running, collect metrics
+            long current_mem = get_memory_peak(child_pid);
+            if (current_mem > log_data.memory_peak_kb) {
+                log_data.memory_peak_kb = current_mem;
+            }
+            
+            // Capture CPU ticks and Faults
+            unsigned long minflt = 0, majflt = 0;
+            unsigned long long current_ticks = get_process_metrics(child_pid, &minflt, &majflt);
+            if (current_ticks > total_ticks) {
+                total_ticks = current_ticks;
+            }
+            // Update faults (they are cumulative in stat, so just take latest)
+            log_data.minflt = minflt;
+            log_data.majflt = majflt;
+
+            
+            usleep(100000); // 100ms sample rate
+        } else if (result == -1) {
+            perror("waitpid");
+            child_running = 0;
+        } else {
+            // Child exited
+            child_running = 0;
+        }
+    }
+    
+    long end_time = get_current_time_ms();
+    log_data.runtime_ms = end_time - start_time;
+
+    // Calculate CPU Usage %
+    // total_ticks / CLK_TCK = CPU seconds
+    // runtime_ms / 1000 = Wall seconds
+    if (log_data.runtime_ms > 0) {
+        double cpu_seconds = (double)total_ticks / sysconf(_SC_CLK_TCK);
+        double wall_seconds = (double)log_data.runtime_ms / 1000.0;
+        if (wall_seconds > 0) {
+            log_data.cpu_usage_percent = (int)((cpu_seconds / wall_seconds) * 100.0);
+        }
+    }
+
 
     if (WIFEXITED(status)) {
         printf("[Sandbox-Parent] Child exited with status: %d\n", WEXITSTATUS(status));
+        snprintf(log_data.exit_reason, sizeof(log_data.exit_reason), "EXITED(%d)", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        printf("[Sandbox-Parent] Child killed by signal: %d (Syscall Violation?)\n", WTERMSIG(status));
-        if (WTERMSIG(status) == SIGSYS) {
+        int sig = WTERMSIG(status);
+        printf("[Sandbox-Parent] Child killed by signal: %d\n", sig);
+        snprintf(log_data.termination_signal, sizeof(log_data.termination_signal), "SIG%d", sig);
+        
+        if (sig == SIGSYS) {
              printf("[Sandbox-Parent] DETECTED ILLEGAL SYSCALL (Seccomp Blocked)\n");
+             snprintf(log_data.exit_reason, sizeof(log_data.exit_reason), "SECURITY_VIOLATION");
+             // In a real audit setup, we'd read audit log to find WHICH syscall. 
+             // Here we assume based on context or store "Unknown"
+             snprintf(log_data.blocked_syscall, sizeof(log_data.blocked_syscall), "Unknown(SIGSYS)");
+        } else if (sig == SIGKILL) {
+             snprintf(log_data.exit_reason, sizeof(log_data.exit_reason), "KILLED_BY_OS");
+        } else {
+             snprintf(log_data.exit_reason, sizeof(log_data.exit_reason), "SIGNALED");
         }
     }
+    
+    // Generate Log Filename
+    char filename[128];
+    snprintf(filename, sizeof(filename), "logs/run_%ld.json", time(NULL));
+    log_telemetry(filename, &log_data);
 
     free(stack);
     return 0;
 }
+

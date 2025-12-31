@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OS Sandbox Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { color: #333; }
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+        .stat-box { text-align: center; padding: 20px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; }
+        .stat-value { font-size: 2em; font-weight: bold; color: #007bff; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .malicious { color: red; font-weight: bold; }
+        .benign { color: green; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OS Sandbox Analytics Dashboard</h1>
+        
+        <div class="stats-grid">
+            <div class="card stat-box">
+                <div>Total Runs</div>
+                <div class="stat-value" id="total-runs">-</div>
+            </div>
+            <div class="card stat-box">
+                <div>Avg CPU Usage</div>
+                <div class="stat-value" id="avg-cpu">-%</div>
+            </div>
+            <div class="card stat-box">
+                <div>Avg Memory (KB)</div>
+                <div class="stat-value" id="avg-mem">-</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <canvas id="violationChart"></canvas>
+        </div>
+
+        <div class="card">
+            <h2>Recent Executions</h2>
+            <table id="logs-table">
+                <thead>
+                    <tr>
+                        <th>Program</th>
+                        <th>Profile</th>
+                        <th>Acc Time (ms)</th>
+                        <th>CPU %</th>
+                        <th>Mem (KB)</th>
+                        <th>Exit Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- JS populates this -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('total-runs').textContent = data.total_runs;
+                document.getElementById('avg-cpu').textContent = data.avg_cpu + '%';
+                document.getElementById('avg-mem').textContent = data.avg_mem;
+
+                const tbody = document.querySelector('#logs-table tbody');
+                tbody.innerHTML = '';
+                data.runs.forEach(run => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${run.program}</td>
+                        <td>${run.profile}</td>
+                        <td>${run.runtime_ms}</td>
+                        <td>${run.cpu_usage_percent}</td>
+                        <td>${run.memory_peak_kb}</td>
+                        <td class="${run.exit_reason.includes('VIOLATION') ? 'malicious' : ''}">${run.exit_reason}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                // Chart
+                const ctx = document.getElementById('violationChart').getContext('2d');
+                if (window.myChart) window.myChart.destroy();
+                
+                window.myChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: Object.keys(data.violations),
+                        datasets: [{
+                            label: 'Exit Reasons',
+                            data: Object.values(data.violations),
+                            backgroundColor: 'rgba(54, 162, 235, 0.5)'
+                        }]
+                    },
+                    options: { responsive: true }
+                });
+
+            } catch (e) {
+                console.error("Error fetching stats:", e);
+            }
+        }
+
+        fetchStats();
+        setInterval(fetchStats, 5000); // Refresh every 5s
+    </script>
+</body>
+</html>
