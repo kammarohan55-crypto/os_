@@ -50,6 +50,8 @@ def stats():
     CRASH-RESISTANT: Always returns valid JSON
     """
     try:
+        # Get original logs for timeline data
+        original_logs = load_all_logs("../logs")
         df = get_feature_dataframe()
         
         if df.empty:
@@ -61,18 +63,31 @@ def stats():
                 "runs": []
             })
         
-        # Enrich with ML predictions
+        # Create a mapping of PID to original log (for timeline data)
+        log_map = {log.get('pid'): log for log in original_logs}
+        
+        # Enrich with ML predictions AND timeline
         enriched_runs = []
         for idx, row in df.head(50).iterrows():
             try:
                 ml_result = classifier.predict(row.to_dict())
                 run_data = row.to_dict()
                 run_data.update(ml_result)
+                
+                # Add timeline from original log
+                pid = row.get('pid', 0)
+                if pid in log_map:
+                    run_data['timeline'] = log_map[pid].get('timeline', {})
+                else:
+                    run_data['timeline'] = {'time_ms': [], 'cpu_percent': [], 'memory_kb': []}
+                
                 enriched_runs.append(run_data)
             except Exception as e:
                 print(f"[WARNING] ML prediction failed for row {idx}: {e}")
                 # Still include the row without ML
-                enriched_runs.append(row.to_dict())
+                run_data = row.to_dict()
+                run_data['timeline'] = {'time_ms': [], 'cpu_percent': [], 'memory_kb': []}
+                enriched_runs.append(run_data)
         
         result = {
             "total_runs": len(df),
