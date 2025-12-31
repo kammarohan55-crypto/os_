@@ -219,7 +219,7 @@ int main(int argc, char *argv[]) {
                 log_data.memory_peak_kb = current_mem;
             }
             
-            // Capture CPU ticks and Faults
+            // Capure CPU ticks and Faults
             unsigned long minflt = 0, majflt = 0;
             unsigned long long current_ticks = get_process_metrics(child_pid, &minflt, &majflt);
             if (current_ticks > total_ticks) {
@@ -228,6 +228,32 @@ int main(int argc, char *argv[]) {
             // Update faults (they are cumulative in stat, so just take latest)
             log_data.minflt = minflt;
             log_data.majflt = majflt;
+
+
+            // -------------------------------------------------------------
+            // DYNAMIC POLICY ADAPTATION (Phase 5)
+            // OS Concept: Runtime Enforcement based on Behavioral Analysis
+            // -------------------------------------------------------------
+            if (config.profile == PROFILE_LEARNING) {
+                // Heuristic: If CPU ticks > Threshold or Faults > Threshold
+                // In a real system, this would be more complex or use eBPF data
+                
+                // Thresholds (Arbitrary for demo)
+                unsigned long long cpu_threshold_ticks = sysconf(_SC_CLK_TCK) * 2; // ~2 seconds of full CPU
+                unsigned long fault_threshold = 1000;
+                
+                if (current_ticks > cpu_threshold_ticks || majflt > fault_threshold) {
+                     printf("\n[Sandbox-Monitor] ⚠️ RISK DETECTED in Learning Mode!\n");
+                     printf("[Sandbox-Monitor] Reason: usage (%llu ticks) or faults (%lu) > threshold.\n", current_ticks, majflt);
+                     printf("[Sandbox-Monitor] 🔄 ADAPTING POLICY: Switching to STRICT enforcement (Terminating Process)...\n");
+                     
+                     kill(child_pid, SIGKILL);
+                     child_running = 0;
+                     
+                     snprintf(log_data.exit_reason, sizeof(log_data.exit_reason), "POLICY_ADAPATION_KILL");
+                }
+            }
+
 
             
             usleep(100000); // 100ms sample rate
