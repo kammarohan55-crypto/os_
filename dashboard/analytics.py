@@ -55,6 +55,14 @@ def extract_features(logs):
             'sample_count': len(timeline.get('time_ms', [])),
         }
         
+        # Extract eBPF syscall features (Phase 2)
+        syscall_events = log.get('syscall_events', {})
+        
+        feature_row['syscall_rate'] = syscall_events.get('syscall_rate_per_sec', 0)
+        feature_row['syscall_diversity'] = syscall_events.get('unique_syscalls', 0)
+        feature_row['syscall_network_count'] = syscall_events.get('network_syscalls', 0)
+        feature_row['total_syscalls'] = syscall_events.get('total_syscalls', 0)
+        
         # Compute timeline statistics (safe)
         cpu_samples = timeline.get('cpu_percent', [])
         mem_samples = timeline.get('memory_kb', [])
@@ -122,3 +130,23 @@ def get_syscall_frequency(df):
     # Filter non-empty syscalls
     syscalls = df[df['blocked_syscall'] != '']['blocked_syscall']
     return syscalls.value_counts().to_dict()
+
+def get_syscall_stats(logs):
+    """Extract eBPF syscall statistics from logs"""
+    syscall_data = []
+    
+    for log in logs:
+        syscall_events = log.get('syscall_events', {})
+        if syscall_events:
+            top_syscalls = syscall_events.get('top_syscalls', [])
+            for sc in top_syscalls:
+                syscall_data.append({
+                    'program': log.get('program', 'unknown'),
+                    'syscall_name': sc['name'],
+                    'count': sc['count']
+                })
+    
+    if not syscall_data:
+        return None
+    
+    return pd.DataFrame(syscall_data)

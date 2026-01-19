@@ -1,0 +1,8 @@
+# Phase 3 - XGBoost Ensemble (Optional)
+xgboost==2.0.3           # Ensemble ML for improved accuracy
+flask-limiter==3.5.0     # API rate limiting
+flask-cors==4.0.0        # CORS support
+
+# Forensics (Optional - Phase 3 Priority 3)
+# reportlab==4.0.7       # PDF generation
+# Pillow==10.1.0         # Image processing for reports

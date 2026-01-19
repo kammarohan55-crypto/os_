@@ -1,13 +1,30 @@
 from flask import Flask, render_template, jsonify
 import pandas as pd
 import traceback
-from ml_model import RiskClassifier
-from analytics import load_all_logs, extract_features, compute_statistics, get_syscall_frequency
+import os
+import pickle
+
+# Try to use ensemble model first, fallback to basic
+try:
+    from ml_ensemble import EnsembleRiskClassifier as RiskClassifier
+    print("[ML] Using Ensemble Classifier (RF + XGBoost)")
+except ImportError:
+    from ml_model import RiskClassifier
+    print("[ML] Using Basic RandomForest Classifier")
+
+from analytics import load_all_logs, extract_features, compute_statistics, get_syscall_frequency, get_syscall_stats
 
 app = Flask(__name__)
 
 # Global state (cached)
-classifier = RiskClassifier()
+if os.path.exists('../data/trained_model.pkl'):
+    print("[ML] Loading pretrained model...")
+    with open('../data/trained_model.pkl', 'rb') as f:
+        classifier = pickle.load(f)
+    print(f"[ML] Loaded pretrained model with {len(classifier.feature_names)} features")
+else:
+    print("[ML] No pretrained model found, using seed data")
+    classifier = RiskClassifier()
 cached_features = None
 last_log_count = 0
 
@@ -66,11 +83,12 @@ def stats():
         # Create a mapping of PID to original log (for timeline data)
         log_map = {log.get('pid'): log for log in original_logs}
         
-        # Enrich with ML predictions AND timeline
+        # Enrich with ML predictions (with SHAP) AND timeline
         enriched_runs = []
         for idx, row in df.head(50).iterrows():
             try:
-                ml_result = classifier.predict(row.to_dict())
+                # Use explainable prediction with SHAP values
+                ml_result = classifier.predict_with_explanation(row.to_dict())
                 run_data = row.to_dict()
                 run_data.update(ml_result)
                 
@@ -94,7 +112,9 @@ def stats():
             "avg_cpu": int(df['peak_cpu'].mean()) if 'peak_cpu' in df.columns else 0,
             "avg_mem": int(df['peak_memory_kb'].mean()) if 'peak_memory_kb' in df.columns else 0,
             "violations": df['exit_reason'].value_counts().to_dict() if 'exit_reason' in df.columns else {},
-            "runs": enriched_runs
+            "runs": enriched_runs,
+            "ebpf_available": any(df['syscall_rate'] > 0) if 'syscall_rate' in df.columns else False,
+            "avg_syscall_rate": int(df['syscall_rate'].mean()) if 'syscall_rate' in df.columns else 0
         }
         
         return jsonify(result)
@@ -155,7 +175,7 @@ def ml_predictions():
             "predictions": predictions,
             "model_info": {
                 "type": "RandomForest",
-                "features": ["runtime_ms", "peak_cpu", "peak_memory_kb", "page_faults_minor", "page_faults_major"],
+                "features": classifier.feature_names,
                 "trained": classifier.is_trained
             }
         })
@@ -164,6 +184,49 @@ def ml_predictions():
         print(f"[ERROR] /api/ml crashed: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e), "predictions": []}), 200
+
+@app.route('/api/ebpf')
+def ebpf_stats():
+    """eBPF syscall statistics (Phase 2)"""
+    try:
+        logs = load_all_logs("../logs")
+        df = get_feature_dataframe()
+        
+        if df.empty:
+            return jsonify({
+                "ebpf_enabled": False,
+                "syscall_stats": {},
+                "top_syscalls": []
+            })
+        
+        # Check if eBPF data exists
+        ebpf_enabled = 'syscall_rate' in df.columns and any(df['syscall_rate'] > 0)
+        
+        # Get syscall statistics from logs
+        syscall_df = get_syscall_stats(logs)
+        
+        top_syscalls = []
+        if syscall_df is not None and not syscall_df.empty:
+            # Aggregate across all programs
+            top_syscalls = syscall_df.groupby('syscall_name')['count'].sum().sort_values(ascending=False).head(10).to_dict()
+            top_syscalls = [{'name': k, 'count': int(v)} for k, v in top_syscalls.items()]
+        
+        result = {
+            "ebpf_enabled": ebpf_enabled,
+            "syscall_stats": {
+                "avg_rate": float(df['syscall_rate'].mean()) if 'syscall_rate' in df.columns else 0,
+                "avg_diversity": float(df['syscall_diversity'].mean()) if 'syscall_diversity' in df.columns else 0,
+                "total_network_calls": int(df['syscall_network_count'].sum()) if 'syscall_network_count' in df.columns else 0
+            },
+            "top_syscalls": top_syscalls
+        }
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        print(f"[ERROR] /api/ebpf crashed: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "ebpf_enabled": False}), 200
 
 if __name__ == '__main__':
     print("[Flask] Starting OS Sandbox Analytics Dashboard...")

@@ -116,7 +116,7 @@ int child_fn(void *arg) {
 }
 
 void print_usage(const char *prog) {
-    fprintf(stderr, "Usage: %s [--profile=STRICT|RESOURCE-AWARE|LEARNING] <executable> [args...]\n", prog);
+    fprintf(stderr, "Usage: %s [--profile=STRICT|RESOURCE-AWARE|LEARNING] [--enable-ebpf] <executable> [args...]\n", prog);
 }
 
 int main(int argc, char *argv[]) {
@@ -128,21 +128,29 @@ int main(int argc, char *argv[]) {
     // Default profile
     sandbox_profile_t profile = PROFILE_STRICT;
     char *profile_str = "STRICT";
+    int enable_ebpf = 0;
     
     int bin_index = 1;
-    if (strncmp(argv[1], "--profile=", 10) == 0) {
-        char *pinfo = argv[1] + 10;
-        if (strcmp(pinfo, "STRICT") == 0) {
-            profile = PROFILE_STRICT;
-            profile_str = "STRICT";
-        } else if (strcmp(pinfo, "RESOURCE-AWARE") == 0) {
-            profile = PROFILE_RESOURCE_AWARE;
-            profile_str = "RESOURCE-AWARE";
-        } else if (strcmp(pinfo, "LEARNING") == 0) {
-            profile = PROFILE_LEARNING;
-            profile_str = "LEARNING";
-        } else {
-             fprintf(stderr, "Unknown profile: %s. Using STRICT.\n", pinfo);
+    
+    // Parse options
+    while (bin_index < argc && argv[bin_index][0] == '-') {
+        if (strncmp(argv[bin_index], "--profile=", 10) == 0) {
+            char *pinfo = argv[bin_index] + 10;
+            if (strcmp(pinfo, "STRICT") == 0) {
+                profile = PROFILE_STRICT;
+                profile_str = "STRICT";
+            } else if (strcmp(pinfo, "RESOURCE-AWARE") == 0) {
+                profile = PROFILE_RESOURCE_AWARE;
+                profile_str = "RESOURCE-AWARE";
+            } else if (strcmp(pinfo, "LEARNING") == 0) {
+                profile = PROFILE_LEARNING;
+                profile_str = "LEARNING";
+            } else {
+                fprintf(stderr, "Unknown profile: %s. Using STRICT.\n", pinfo);
+            }
+        } else if (strcmp(argv[bin_index], "--enable-ebpf") == 0) {
+            enable_ebpf = 1;
+            printf("[Sandbox-Parent] eBPF telemetry enabled\n");
         }
         bin_index++;
     }
@@ -192,6 +200,35 @@ int main(int argc, char *argv[]) {
     }
 
     printf("[Sandbox-Parent] Child launched with PID: %d\n", child_pid);
+    
+    // Launch eBPF tracer if enabled
+    pid_t ebpf_tracer_pid = 0;
+    char ebpf_output_file[256] = {0};
+    
+    if (enable_ebpf) {
+        snprintf(ebpf_output_file, sizeof(ebpf_output_file), "logs/ebpf_%d_%ld.json", child_pid, time(NULL));
+        
+        ebpf_tracer_pid = fork();
+        if (ebpf_tracer_pid == 0) {
+            // Child process - run eBPF tracer
+            char pid_str[32];
+            snprintf (pid_str, sizeof(pid_str), "%d", child_pid);
+            
+            // Redirect stderr to avoid noise
+            freopen("/dev/null", "w", stderr);
+            
+            execl("/usr/bin/python3", "python3", "runner/ebpf_tracer.py", pid_str, ebpf_output_file, NULL);
+            
+            // If execl fails
+            perror("Failed to start eBPF tracer");
+            exit(1);
+        } else if (ebpf_tracer_pid > 0) {
+            printf("[Sandbox-Parent] eBPF tracer started with PID: %d\n", ebpf_tracer_pid);
+        } else {
+            perror("Failed to fork eBPF tracer");
+            enable_ebpf = 0; // Disable if fork failed
+        }
+    }
 
     // -------------------------------------------------------------
     // H. TIME MANAGEMENT & TELEMETRY
@@ -313,10 +350,24 @@ int main(int argc, char *argv[]) {
         }
     }
     
+    // Wait for eBPF tracer to finish
+    if (enable_ebpf && ebpf_tracer_pid > 0) {
+        printf("[Sandbox-Parent] Waiting for eBPF tracer to finish...\n");
+        int ebpf_status;
+        waitpid(ebpf_tracer_pid, &ebpf_status, 0);
+    }
+    
     // Generate Log Filename with PID for uniqueness
     char filename[128];
     snprintf(filename, sizeof(filename), "logs/run_%d_%ld.json", child_pid, time(NULL));
     log_telemetry(filename, &log_data, child_pid);
+    
+    // Merge eBPF data if available
+    if (enable_ebpf && ebpf_output_file[0] != '\0') {
+        // Python script will be used to merge JSONs in post-processing
+        printf("[Sandbox-Parent] eBPF data saved to: %s\n", ebpf_output_file);
+        printf("[Sandbox-Parent] Merge with: python3 runner/merge_telemetry.py %s %s\n", filename, ebpf_output_file);
+    }
 
     free(stack);
     return 0;

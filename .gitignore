@@ -1,0 +1,47 @@
+# Build artifacts
+*.o
+*.so
+*.a
+runner/launcher
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs and data
+logs/*.json
+logs/*.log
+data/
+*.pkl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+nohup.out
+
+# Test results
+benchmark_results.json
+test_results.txt
+
+# Don't ignore sample logs (for demo)
+!logs/README.md
