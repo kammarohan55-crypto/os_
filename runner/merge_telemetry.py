@@ -40,13 +40,45 @@ def merge_telemetry(telemetry_file, ebpf_file, output_file):
     if 'stat_samples' in merged or 'mem_samples' in merged:
         print("[Merge] Computing aggregates from raw samples...")
         aggregates = compute_aggregates_for_log(merged)
-        merged.update(aggregates)
         
-        print(f"  ✓ CPU: {aggregates.get('peak_cpu_percent', 0)}%")
-        print(f"  ✓ MEM: {aggregates.get('peak_memory_kb', 0)} KB")
-        print(f"  ✓ Runtime: {aggregates.get('runtime_ms', 0)} ms")
+        # EXPLICITLY write all required fields (Step 1: Fix telemetry aggregation)
+        merged['peak_cpu'] = aggregates.get('peak_cpu_percent', 0)
+        merged['avg_cpu'] = aggregates.get('avg_cpu_percent', 0)
+        merged['peak_memory_kb'] = aggregates.get('peak_memory_kb', 0)
+        merged['avg_memory_kb'] = aggregates.get('avg_memory_kb', 0)
+        merged['runtime_ms'] = aggregates.get('runtime_ms', 0)
+        
+        # Also add with alternate naming for compatibility
+        merged['peak_cpu_percent'] = aggregates.get('peak_cpu_percent', 0)
+        merged['cpu_percent'] = aggregates.get('cpu_percent', 0)
+        merged['cpu_used_seconds'] = aggregates.get('cpu_used_seconds', 0)
+        
+        # Validate: warn if values are zero
+        if merged['peak_cpu'] == 0:
+            print("  ⚠️  WARNING: peak_cpu is ZERO! Check stat_samples data.")
+        else:
+            print(f"  ✓ CPU: peak={merged['peak_cpu']}%, avg={merged['avg_cpu']}%")
+        
+        if merged['peak_memory_kb'] == 0:
+            print("  ⚠️  WARNING: peak_memory_kb is ZERO! Check mem_samples data.")
+        else:
+            print(f"  ✓ MEM: peak={merged['peak_memory_kb']} KB, avg={merged['avg_memory_kb']} KB")
+        
+        if merged['runtime_ms'] == 0:
+            print("  ⚠️  WARNING: runtime_ms is ZERO! Check timestamps.")
+        else:
+            print(f"  ✓ Runtime: {merged['runtime_ms']} ms")
     else:
         print("[WARNING] No raw samples found - aggregates may be zero!")
+        # Set defaults to avoid undefined fields
+        merged['peak_cpu'] = 0
+        merged['avg_cpu'] = 0
+        merged['peak_memory_kb'] = 0
+        merged['avg_memory_kb'] = 0
+        merged['runtime_ms'] = 0
+        merged['peak_cpu_percent'] = 0
+        merged['cpu_percent'] = 0
+        merged['cpu_used_seconds'] = 0
     
     # Normalize for API compatibility
     merged = normalize_for_api(merged)
