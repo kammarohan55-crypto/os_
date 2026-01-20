@@ -59,7 +59,13 @@ def get_feature_dataframe():
 
 @app.route('/')
 def index():
+    """Main dashboard"""
     return render_template('index.html')
+
+@app.route('/comparison')
+def comparison():
+    """Research comparison page (Phase 4)"""
+    return render_template('comparison.html')
 
 @app.route('/api/stats')
 def stats():

@@ -2,12 +2,14 @@
 
 # Core Dependencies (Existing)
 flask==3.0.0
-pandas==2.1.4
+pandas==2.1.3
 numpy==1.26.2
 scikit-learn==1.3.2
+scipy==1.11.4          # Statistical testing (Phase 4)
 
 # New Dependencies - Phase 1
-shap==0.44.0          # SHAP explainability for ML
+shap==0.44.0            # SHAP explainability
+pyyaml==6.0.1           # Scenario label loading (Phase 4) for ML
 pyyaml==6.0.1         # Policy engine YAML parsing
 
 # Visualization

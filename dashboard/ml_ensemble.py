@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.preprocessing import StandardScaler
+import hashlib
+import json
+from datetime import datetime
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
@@ -67,6 +70,11 @@ class EnsembleRiskClassifier:
         self.is_trained = False
         self.feature_names = None
         
+        # Phase 4: Reproducibility tracking
+        self.random_seed = 42
+        self.feature_schema_version = "2.0"  # 8 features
+        self.model_created_at = datetime.utcnow().isoformat()
+        
         # Phase 2: Extended to 8 features
         self.feature_names = [
             'runtime_ms', 'peak_cpu', 'peak_memory_kb',
@@ -92,6 +100,38 @@ class EnsembleRiskClassifier:
         ])
         
         self.train_on_seed()
+    
+    def get_model_hash(self):
+        """
+        Compute hash of model parameters for reproducibility.
+        
+        Critical for research: Ensures exact model configuration is documented.
+        """
+        params = {
+            'n_estimators_rf': self.rf.n_estimators,
+            'max_depth_rf': self.rf.max_depth,
+            'random_state': self.rf.random_state,
+            'feature_names': self.feature_names,
+            'feature_schema_version': self.feature_schema_version,
+            'xgboost_available': XGBOOST_AVAILABLE
+        }
+        hash_str = json.dumps(params, sort_keys=True)
+        return hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+    
+    def get_reproducibility_info(self):
+        """
+        Get all reproducibility metadata.
+        
+        This enables full experiment reproduction.
+        """
+        return {
+            'model_hash': self.get_model_hash(),
+            'random_seed': self.random_seed,
+            'feature_schema_version': self.feature_schema_version,
+            'model_created_at': self.model_created_at,
+            'is_trained': self.is_trained,
+            'n_features': len(self.feature_names) if self.feature_names else 0
+        }
     
     def train_on_seed(self):
         """Train on seed data (cold start)"""
@@ -183,7 +223,12 @@ class EnsembleRiskClassifier:
             "prediction": prediction,
             "confidence": round(confidence * 100, 1),
             "reason": self._generate_explanation(prediction, feature_row),
-            "model_type": "Ensemble (RF+XGBoost)" if XGBOOST_AVAILABLE else "RandomForest"
+            "model_type": "Ensemble (RF+XGBoost)" if XGBOOST_AVAILABLE else "RandomForest",
+            
+            # Phase 4: Reproducibility metadata
+            "model_hash": self.get_model_hash(),
+            "prediction_timestamp": datetime.utcnow().isoformat(),
+            "feature_schema_version": self.feature_schema_version
         }
         
         # Add SHAP if available

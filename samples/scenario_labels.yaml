@@ -1,0 +1,99 @@
+# Ground Truth Labels - Scenario-Based (NOT Threshold-Based)
+#
+# CRITICAL FOR PUBLICATION:
+# Labels are assigned based on controlled workload semantics,
+# NOT derived from feature thresholds.
+#
+# This ensures:
+# 1. No circular logic (features predict labels that came from features)
+# 2. True supervised learning
+# 3. Ability to evaluate model on unseen threshold combinations
+
+scenarios:
+  cpu_hog:
+    label: malicious_sim
+    description: "Simulated CPU exhaustion attack - infinite loop"
+    threat_type: resource_exhaustion
+    expected_behavior:
+      - high_cpu: true
+      - long_runtime: true
+      - syscall_diversity: low
+    
+  fork_bomb:
+    label: malicious_sim
+    description: "Process bomb attack - recursive forking"
+    threat_type: resource_exhaustion
+    expected_behavior:
+      - process_creation: excessive
+      - syscall_diversity: low
+      - blocked_by: seccomp
+    
+  mem_eater:
+    label: malicious_sim
+    description: "Memory exhaustion attack - large allocations"
+    threat_type: resource_exhaustion
+    expected_behavior:
+      - high_memory: true
+      - allocation_pattern: exponential
+    
+  fs_attack:
+    label: malicious_sim
+    description: "Filesystem write attack - unauthorized access"
+    threat_type: unauthorized_access
+    expected_behavior:
+      - write_attempts: /etc/passwd
+      - blocked_by: read_only_fs
+    
+  sleep:
+    label: benign
+    description: "Benign sleep syscall test"
+    threat_type: null
+    expected_behavior:
+      - low_cpu: true
+      - predictable_exit: true
+    
+  ls:
+    label: benign
+    description: "Directory listing utility"
+    threat_type: null
+    expected_behavior:
+      - low_cpu: true
+      - filesystem_read: true
+    
+  echo:
+    label: benign
+    description: "Text output utility"
+    threat_type: null
+    expected_behavior:
+      - very_fast: true
+      - minimal_resources: true
+    
+  date:
+    label: benign
+    description: "System time utility"
+    threat_type: null
+    expected_behavior:
+      - very_fast: true
+      - minimal_resources: true
+    
+  find:
+    label: benign
+    description: "File search utility"
+    threat_type: null
+    expected_behavior:
+      - filesystem_read: true
+      - moderate_runtime: true
+
+# Labeling Methodology
+# ====================
+# 
+# Scenario identity is known a priori from test design.
+# Each test program has a defined purpose (attack simulation or benign task).
+# 
+# This is the GOLD STANDARD for supervised learning in security:
+# - Malware datasets: VirusTotal labels, sandbox execution reports
+# - Network intrusion: Known attack patterns (DARPA, KDD Cup)
+# - Our approach: Controlled scenarios with semantic labels
+#
+# NOT ACCEPTABLE: Labels derived from "if cpu > 80% then malicious"
+# (This would make ML evaluation meaningless)
