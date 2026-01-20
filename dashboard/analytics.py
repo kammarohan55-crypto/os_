@@ -157,15 +157,26 @@ def compute_statistics(df):
         "avg_memory_kb": int(df['peak_memory_kb'].mean())
     }
     
-    # By profile
-    for profile in df['profile'].unique():
-        profile_df = df[df['profile'] == profile]
-        stats["by_profile"][profile] = {
-            "count": len(profile_df),
-            "avg_cpu": int(profile_df['peak_cpu'].mean()),
-            "avg_mem": int(profile_df['peak_memory_kb'].mean()),
-            "avg_runtime": int(profile_df['runtime_ms'].mean())
-        }
+    # By-profile breakdown (optional - field may not exist)
+    by_profile = {}
+    if 'profile' in df.columns:
+        for profile in df['profile'].unique():
+            subset = df[df['profile'] == profile]
+            by_profile[profile] = {
+                'count': len(subset),
+                'avg_cpu': float(subset['peak_cpu'].mean()) if 'peak_cpu' in subset.columns else 0,
+                'avg_mem': float(subset['peak_memory_kb'].mean()) if 'peak_memory_kb' in subset.columns else 0,
+                'avg_runtime': float(subset['runtime_ms'].mean()) if 'runtime_ms' in subset.columns else 0
+            }
+    else:
+        # No profile field, use defaults
+        by_profile = {'default': {
+            'count': len(df),
+            'avg_cpu': float(df['peak_cpu'].mean()) if 'peak_cpu' in df.columns and len(df) > 0 else 0,
+            'avg_mem': float(df['peak_memory_kb'].mean()) if 'peak_memory_kb' in df.columns and len(df) > 0 else 0,
+            'avg_runtime': float(df['runtime_ms'].mean()) if 'runtime_ms' in df.columns and len(df) > 0 else 0
+        }}
+    stats["by_profile"] = by_profile
     
     # By exit reason
     exit_counts = df['exit_reason'].value_counts().to_dict()

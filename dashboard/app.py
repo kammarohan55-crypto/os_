@@ -98,10 +98,18 @@ def stats():
         enriched_runs = []
         for idx, row in df.head(50).iterrows():
             try:
-                # Use explainable prediction with SHAP values
-                ml_result = classifier.predict_with_explanation(row.to_dict())
-                run_data = row.to_dict()
-                run_data.update(ml_result)
+                # Check if we have enough features for prediction
+                if len(classifier.feature_names) == 0:
+                    # Model not trained yet, skip prediction
+                    run_data = row.to_dict()
+                    run_data['prediction'] = 'Unknown'
+                    run_data['confidence'] = 0
+                    run_data['reason'] = 'Model not trained'
+                else:
+                    # Use explainable prediction with SHAP values
+                    ml_result = classifier.predict_with_explanation(row.to_dict())
+                    run_data = row.to_dict()
+                    run_data.update(ml_result)
                 
                 # Normalize for API compatibility (fixes zero metrics issue)
                 run_data = normalize_for_api(run_data)
