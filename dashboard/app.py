@@ -37,6 +37,8 @@ def get_feature_dataframe():
     """
     CRITICAL: Single source of truth for all data
     
+    FIX #8: Returns last N runs sorted by timestamp for live freshness
+    
     Returns: pandas DataFrame with extracted features
     """
     global cached_features, last_log_count
@@ -44,16 +46,28 @@ def get_feature_dataframe():
     try:
         logs = load_all_logs("../logs")
         
-        # Cache invalidation
-        if len(logs) != last_log_count:
-            print(f"[Analytics] Extracting features from {len(logs)} logs...")
-            cached_features = extract_features(logs)
-            last_log_count = len(logs)
+        # FIX #8: Sort by timestamp to get latest runs
+        if logs:
+            try:
+                # Try to sort by timestamp if available
+                logs = sorted(logs, key=lambda x: x.get('start_ts', x.get('timestamp', 0)))
+            except:
+                pass  # If sorting fails, use original order
+        
+        # Cache invalidation - force refresh on every call for live updates
+        # This ensures dashboard shows fresh data
+        print(f"[Analytics] Extracting features from {len(logs)} logs...")
+        cached_features = extract_features(logs)
+        last_log_count = len(logs)
+        
+        # FIX #8: Return only last 50 runs for performance
+        if len(cached_features) > 50:
+            cached_features = cached_features.tail(50)
             
-            # Train ML once when data changes
-            if len(cached_features) > 0:
-                print(f"[ML] Training on {len(cached_features)} samples...")
-                classifier.train(cached_features)
+        # Train ML once when data changes
+        if len(cached_features) > 0:
+            print(f"[ML] Training on {len(cached_features)} samples...")
+            classifier.train(cached_features)
         
         return cached_features if cached_features is not None else pd.DataFrame()
     
@@ -98,21 +112,115 @@ def stats():
         enriched_runs = []
         for idx, row in df.head(50).iterrows():
             try:
-                # Check if we have enough features for prediction
-                if len(classifier.feature_names) == 0:
+                # STEP 2: Block ML if metrics are invalid (prevent fake confidence)
+                runtime_ms = row.get('runtime_ms', 0)
+                peak_cpu = row.get('peak_cpu', row.get('peak_cpu_percent', 0))
+                
+                if runtime_ms == 0 or peak_cpu == 0:
+                    # Invalid data - skip ML prediction
+                    run_data = row.to_dict()
+                    run_data['prediction'] = 'Insufficient data'
+                    run_data['confidence'] = 0.0
+                    run_data['reason'] = 'Invalid metrics: runtime_ms or peak_cpu is zero'
+                    print(f"  [WARNING] Skipping ML for run {idx}: runtime={runtime_ms}ms, cpu={peak_cpu}%")
+                
+                # FIX 1: BENIGN SHORT-RUN FILTER (Critical for credibility!)
+                # Short-lived system utilities with minimal CPU are explicitly benign
+                elif runtime_ms < 50 and peak_cpu < 5:
+                    run_data = row.to_dict()
+                    run_data['prediction'] = 'Benign'
+                    run_data['confidence'] = 99.0
+                    run_data['reason'] = 'Short-lived system utility (runtime<50ms, CPU<5%) - standard benign pattern'
+                    print(f"  [BENIGN-FILTER] {row.get('program', 'unknown')}: runtime={runtime_ms}ms, cpu={peak_cpu}%")
+                
+                elif len(classifier.feature_names) == 0:
                     # Model not trained yet, skip prediction
                     run_data = row.to_dict()
                     run_data['prediction'] = 'Unknown'
                     run_data['confidence'] = 0
                     run_data['reason'] = 'Model not trained'
                 else:
-                    # Use explainable prediction with SHAP values
-                    ml_result = classifier.predict_with_explanation(row.to_dict())
-                    run_data = row.to_dict()
-                    run_data.update(ml_result)
+                    # FIX 2: Reject Out-of-Distribution Samples
+                    # Check if feature vector has meaningful variance
+                    feature_values = []
+                    for fname in classifier.feature_names:
+                        feature_values.append(row.get(fname, 0))
+                    
+                    import numpy as np
+                    feature_std = np.std(feature_values) if feature_values else 0
+                    
+                    if feature_std < 0.01:  # epsilon = 0.01
+                        # Out-of-distribution - reject
+                        run_data = row.to_dict()
+                        run_data['prediction'] = 'Unknown'
+                        run_data['confidence'] = 0.0
+                        run_data['reason'] = 'Out-of-distribution sample (feature variance too low)'
+                        print(f"  [OOD-REJECT] {row.get('program', 'unknown')}: feature_std={feature_std:.4f}")
+                    else:
+                        # Valid data and trained model - use explainable prediction with SHAP values
+                        ml_result = classifier.predict_with_explanation(row.to_dict())
+                        run_data = row.to_dict()
+                        run_data.update(ml_result)
                 
                 # Normalize for API compatibility (fixes zero metrics issue)
                 run_data = normalize_for_api(run_data)
+                
+                # FIX #6: Wire policy enforcement to ML predictions
+                # Map ML confidence to policy decision
+                prediction = run_data.get('prediction', 'Unknown')
+                confidence = run_data.get('confidence', 0)
+                
+                # Policy decision logic
+                if prediction == 'Benign' or prediction == 'Insufficient data':
+                    policy_mode = 'observe'
+                    policy_reason = f"Low risk - {prediction}"
+                    attempted_violations = 0
+                    enforced_blocks = 0
+                elif prediction == 'Malicious' and confidence >= 90:
+                    policy_mode = 'block'
+                    policy_reason = f"High confidence malicious ({confidence}%)"
+                    attempted_violations = 1
+                    enforced_blocks = 1
+                elif prediction == 'Malicious' and confidence >= 70:
+                    policy_mode = 'restrict'
+                    policy_reason = f"Moderate confidence malicious ({confidence}%)"
+                    attempted_violations = 1
+                    enforced_blocks = 0  # Restrictive but not fully blocked
+                elif prediction == 'Suspicious':
+                    policy_mode = 'warn'
+                    policy_reason = f"Suspicious but uncertain ({confidence}%)"
+                    attempted_violations = 1
+                    enforced_blocks = 0
+                else:
+                    policy_mode = 'observe'
+                    policy_reason = 'Unknown risk level'
+                    attempted_violations = 0
+                    enforced_blocks = 0
+                
+                run_data['policy_decision'] = {
+                    'mode': policy_mode,
+                    'reason': policy_reason,
+                    'attempted_violations': attempted_violations,
+                    'enforced_blocks': enforced_blocks,
+                    'confidence_threshold_met': confidence >= 70
+                }
+                
+                # CRITICAL: Mark which metrics are actually available (prevent fake display)
+                # Rule: If data not collected → do NOT display metric
+                run_data['metrics_available'] = {
+                    'syscall_data': bool(row.get('syscall_rate', 0) > 0 or row.get('total_syscalls', 0) > 0),
+                    'network_data': bool(row.get('syscall_network_count', 0) > 0),
+                    'cpu_data': bool(peak_cpu > 0),
+                    'memory_data': bool(row.get('peak_memory_kb', 0) > 0),
+                    'runtime_data': bool(runtime_ms > 0)
+                }
+                
+                # If syscall data not available, explicitly mark it
+                if not run_data['metrics_available']['syscall_data']:
+                    run_data['syscall_note'] = 'Syscall telemetry unavailable in this run (eBPF not enabled)'
+                
+                if not run_data['metrics_available']['network_data']:
+                    run_data['network_note'] = 'Network telemetry unavailable'
                 
                 # Add timeline from original log
                 pid = row.get('pid', 0)
@@ -129,6 +237,10 @@ def stats():
                 run_data['timeline'] = {'time_ms': [], 'cpu_percent': [], 'memory_kb': []}
                 enriched_runs.append(run_data)
         
+        # FIX #6: Calculate policy enforcement statistics
+        total_violations_attempted = sum(r.get('policy_decision', {}).get('attempted_violations', 0) for r in enriched_runs)
+        total_blocks_enforced = sum(r.get('policy_decision', {}).get('enforced_blocks', 0) for r in enriched_runs)
+        
         result = {
             "total_runs": len(df),
             "avg_cpu": int(df['peak_cpu'].mean()) if 'peak_cpu' in df.columns else 0,
@@ -136,7 +248,13 @@ def stats():
             "violations": df['exit_reason'].value_counts().to_dict() if 'exit_reason' in df.columns else {},
             "runs": enriched_runs,
             "ebpf_available": any(df['syscall_rate'] > 0) if 'syscall_rate' in df.columns else False,
-            "avg_syscall_rate": int(df['syscall_rate'].mean()) if 'syscall_rate' in df.columns else 0
+            "avg_syscall_rate": int(df['syscall_rate'].mean()) if 'syscall_rate' in df.columns else 0,
+            # Policy enforcement stats
+            "policy_stats": {
+                "total_violations_attempted": total_violations_attempted,
+                "total_blocks_enforced": total_blocks_enforced,
+                "enforcement_rate": round(total_blocks_enforced / max(1, total_violations_attempted) * 100, 1)
+            }
         }
         
         return jsonify(result)

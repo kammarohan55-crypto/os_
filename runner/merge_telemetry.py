@@ -53,6 +53,31 @@ def merge_telemetry(telemetry_file, ebpf_file, output_file):
         merged['cpu_percent'] = aggregates.get('cpu_percent', 0)
         merged['cpu_used_seconds'] = aggregates.get('cpu_used_seconds', 0)
         
+        # FIX #5: Generate time-series data for timeline charts
+        # Convert raw samples to chart-ready series
+        cpu_series = []
+        if 'stat_samples' in merged and len(merged['stat_samples']) > 0:
+            start_ts = merged['stat_samples'][0]['ts']
+            for sample in merged['stat_samples']:
+                # Calculate instantaneous CPU % for this sample
+                cpu_series.append({
+                    'timestamp_ms': int((sample['ts'] - start_ts) * 1000),
+                    'value': min(100, (sample.get('utime', 0) + sample.get('stime', 0)) / 100.0)  # rough approximation
+                })
+        merged['cpu_series'] = cpu_series
+        
+        mem_series = []
+        if 'mem_samples' in merged and len(merged['mem_samples']) > 0:
+            start_ts = merged['mem_samples'][0]['ts']
+            for sample in merged['mem_samples']:
+                mem_series.append({
+                    'timestamp_ms': int((sample['ts'] - start_ts) * 1000),
+                    'value': sample.get('rss_kb', 0)
+                })
+        merged['mem_series'] = mem_series
+        
+        print(f"  ✓ Time-series: {len(cpu_series)} CPU samples, {len(mem_series)} MEM samples")
+        
         # Validate: warn if values are zero
         if merged['peak_cpu'] == 0:
             print("  ⚠️  WARNING: peak_cpu is ZERO! Check stat_samples data.")
@@ -79,6 +104,8 @@ def merge_telemetry(telemetry_file, ebpf_file, output_file):
         merged['peak_cpu_percent'] = 0
         merged['cpu_percent'] = 0
         merged['cpu_used_seconds'] = 0
+        merged['cpu_series'] = []
+        merged['mem_series'] = []
     
     # Normalize for API compatibility
     merged = normalize_for_api(merged)

@@ -319,19 +319,6 @@ class ExplainableRiskClassifier:
             return "Normal behavior"
         
         return " + ".join(explanations)
-
-    def _rule_based_explanation(self, prediction, feature_row):
-        """Fallback rule-based explanation when SHAP is unavailable"""
-        reasons = []
-        
-        if feature_row.get('peak_cpu', 0) > 80:
-            reasons.append("High CPU")
-        
-        if feature_row.get('peak_memory_kb', 0) > 100000:
-            reasons.append("High Memory")
-        
-        if "VIOLATION" in str(feature_row.get('exit_reason', '')):
-            reasons.append("Syscall Violation")
         
         if feature_row.get('runtime_ms', 0) > 2000:
             reasons.append("Long Runtime")
