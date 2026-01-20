@@ -13,6 +13,11 @@ except ImportError:
     print("[ML] Using Basic RandomForest Classifier")
 
 from analytics import load_all_logs, extract_features, compute_statistics, get_syscall_frequency, get_syscall_stats
+import sys
+sys.path.insert(0, '../runner')
+from compute_aggregates import normalize_for_api
+import glob
+import json
 
 app = Flask(__name__)
 
@@ -97,6 +102,9 @@ def stats():
                 ml_result = classifier.predict_with_explanation(row.to_dict())
                 run_data = row.to_dict()
                 run_data.update(ml_result)
+                
+                # Normalize for API compatibility (fixes zero metrics issue)
+                run_data = normalize_for_api(run_data)
                 
                 # Add timeline from original log
                 pid = row.get('pid', 0)
@@ -233,6 +241,37 @@ def ebpf_stats():
         print(f"[ERROR] /api/ebpf crashed: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e), "ebpf_enabled": False}), 200
+
+@app.route('/api/comparison_summary')
+def comparison_summary():
+    """
+    Comparison dashboard API (Phase 4 - Fix #3)
+    
+    Reads benchmark CSVs and returns comparison data
+    """
+    try:
+        # Look for benchmark results
+        benchmark_files = glob.glob('../scripts/output/*.json') + glob.glob('../benchmark*.json')
+        
+        if not benchmark_files:
+            return jsonify({
+                "error": "No benchmark files found",
+                "message": "Run 'sudo python3 scripts/benchmark_statistical.py' first"
+            }), 404
+        
+        # Read the most recent benchmark
+        latest_file = max(benchmark_files, key=os.path.getmtime)
+        
+        with open(latest_file, 'r') as f:
+            data = json.load(f)
+        
+        return jsonify(data)
+    
+    except Exception as e:
+        print(f"[ERROR] /api/comparison_summary crashed: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     print("[Flask] Starting OS Sandbox Analytics Dashboard...")

@@ -17,12 +17,18 @@ import json
 import sys
 import numpy as np
 from scipy import stats
+import os
+import argparse
 
 # Configuration
 RUNS_PER_TEST = 20
 WARMUP_RUNS = 2
 TEST_DURATION = 5  # seconds per run
 RANDOM_SEED = 42
+
+# Output directory (Fix #8: Standardized path)
+OUTDIR = os.environ.get('BENCH_OUT', 'scripts/output')
+os.makedirs(OUTDIR, exist_ok=True)
 
 np.random.seed(RANDOM_SEED)
 
@@ -198,9 +204,10 @@ print(f"✓ Our sandbox (eBPF): {ours_overhead:.2f}% overhead (target: <1%)")
 print(f"✓ Confidence interval width: {results['ours_ebpf']['ci_upper'] - results['ours_ebpf']['ci_lower']:.3f}s")
 print(f"✓ All tests statistically significant (n={RUNS_PER_TEST})")
 print(f"✓ Results reproducible with seed={RANDOM_SEED}")
+print()
 
 # Save results
-output_file = 'benchmark_results_statistical.json'
+output_file = os.path.join(OUTDIR, 'benchmark_results_statistical.json')
 with open(output_file, 'w') as f:
     json.dump({
         'metadata': {
